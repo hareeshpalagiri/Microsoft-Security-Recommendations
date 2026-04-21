@@ -1,0 +1,353 @@
+Excellent idea 👍  
+What you’re proposing—a **GitHub repository documenting Microsoft Security recommendations with real‑world, operational detail**—is exactly how strong security teams build shared knowledge.
+
+Below is a **repository‑ready, long‑form explanation** for the recommendation **“Disable NTLM authentication for Windows”**, including **how NTLM works internally**, **real examples**, **where it’s used**, **how to find it**, and a **safe implementation process** across **DCs, servers, endpoints, printers, and services**.
+
+You can almost copy‑paste sections of this into your repo.
+
+***
+
+# Microsoft Security Recommendation
+
+## Disable NTLM Authentication for Windows
+
+***
+
+## 1. What NTLM Is (Conceptual Overview)
+
+**NTLM (NT LAN Manager)** is a **legacy authentication protocol** used by Windows when:
+
+*   Kerberos cannot be used
+*   Systems are not domain‑aware
+*   Applications are misconfigured
+*   Legacy devices or services are involved
+
+NTLM authenticates using **password‑derived hashes**, not tickets.
+
+> NTLM was designed for **single‑network, trusted environments**, not for modern enterprise or hybrid networks.
+
+***
+
+## 2. How NTLM Works – Internals (Very Important)
+
+Understanding **exactly how NTLM works** explains *why it is dangerous*.
+
+### 2.1 NTLM Authentication Flow (NTLMv2)
+
+Let’s take a **real example**:
+
+> User `HAREESH` accesses a file share on `FILESERV01`
+
+#### Step‑by‑step:
+
+1.  **Client → Server**
+    *   “I want to authenticate as HAREESH”
+
+2.  **Server → Client**
+    *   Sends a **random challenge** (nonce)
+
+3.  **Client**
+    *   Takes:
+        *   User password
+        *   Converts it into an **NTLM hash**
+        *   Combines hash + challenge
+        *   Generates a response
+
+4.  **Client → Server**
+    *   Sends username + response (NOT the password)
+
+5.  **Server → Domain Controller**
+    *   “Can you verify this NTLM response?”
+
+6.  **Domain Controller**
+    *   Uses stored password hash
+    *   Recomputes the expected response
+    *   If it matches → authentication succeeds
+
+✅ Password is not sent  
+❌ **Password hash is usable forever**
+
+***
+
+### 2.2 Why Hashes Are Dangerous
+
+If an attacker steals:
+
+*   The NTLM hash  
+    They can:
+*   Authenticate **without knowing the password**
+*   Use the hash across the network
+
+This is called **Pass‑the‑Hash**.
+
+***
+
+## 3. NTLM vs Kerberos (Why Kerberos Is Safer)
+
+| Feature                 | NTLM       | Kerberos       |
+| ----------------------- | ---------- | -------------- |
+| Authentication type     | Hash‑based | Ticket‑based   |
+| Mutual authentication   | ❌ No       | ✅ Yes          |
+| Replay protection       | Weak       | Strong         |
+| Pass‑the‑Hash           | ✅ Possible | ❌ Not possible |
+| Modern security support | ❌ No       | ✅ Yes          |
+
+Kerberos uses **time‑limited tickets**, not reusable hashes.
+
+***
+
+## 4. Real‑World Attacks That Use NTLM
+
+### 4.1 Pass‑the‑Hash
+
+**Scenario:**
+
+*   Attacker compromises one workstation
+*   Extracts NTLM hashes from LSASS
+*   Uses the hash to access:
+    *   File servers
+    *   Admin shares
+    *   Domain controllers
+
+✅ Extremely common  
+✅ Used in ransomware attacks
+
+***
+
+### 4.2 NTLM Relay (Very Dangerous)
+
+**Scenario:**
+
+1.  User authenticates to a malicious device
+2.  NTLM authentication is intercepted
+3.  Attacker relays it to:
+    *   File server
+    *   Exchange
+    *   AD CS
+4.  Gains access as the user
+
+Tools used:
+
+*   Responder
+*   Impacket
+*   CrackMapExec
+
+***
+
+## 5. Where NTLM Is Still Used (Real Environments)
+
+This is the **most important part** for enterprises.
+
+### 5.1 Domain Controllers
+
+*   Authentication fallback
+*   Legacy trusts
+*   Old clients
+
+⚠️ DCs are the **last place NTLM should be disabled**
+
+***
+
+### 5.2 Member Servers
+
+Common NTLM users:
+
+*   File servers
+*   App servers with misconfigured SPNs
+*   Backup agents
+*   Monitoring tools
+
+Most NTLM here is **unintentional fallback**
+
+***
+
+### 5.3 Workstations
+
+*   Accessing legacy file shares
+*   Cached credentials
+*   Old login scripts
+
+✅ Lowest risk to disable first
+
+***
+
+### 5.4 Printers & Scanners
+
+**Very common NTLM offenders**
+
+*   Scan‑to‑folder
+*   Scan‑to‑email
+*   Embedded devices
+
+Most printers:
+
+*   Do NOT support Kerberos
+*   Use NTLM with stored credentials
+
+***
+
+### 5.5 Linux Servers & NAS Devices
+
+*   Old Samba versions
+*   SMB mounts using NTLM
+*   NAS devices joined to AD improperly
+
+***
+
+### 5.6 Service Accounts & Scheduled Tasks
+
+*   Legacy services
+*   Hardcoded credentials
+*   Non‑Kerberos‑aware applications
+
+***
+
+## 6. How to Check Where NTLM Is Being Used
+
+### 6.1 Enable NTLM Auditing (Mandatory First Step)
+
+**Group Policy (Domain Level):**
+
+    Computer Configuration
+    → Windows Settings
+    → Security Settings
+    → Local Policies
+    → Security Options
+
+Configure:
+
+*   **Network security: Restrict NTLM: NTLM authentication in this domain**
+    → `Audit all`
+
+This **does NOT break anything**.
+
+***
+
+### 6.2 What Logs to Look At
+
+On **Domain Controllers**:
+
+Key events:
+
+*   **Event ID 8001** – NTLM used
+*   **Event ID 8002** – NTLM blocked (later phase)
+*   **Event ID 8004** – Outgoing NTLM blocked
+
+Also correlate with:
+
+*   **4624 (Logon events)**
+*   Authentication package = `NTLM`
+
+***
+
+### 6.3 What to Capture in Analysis
+
+For every NTLM event, record:
+
+*   Source device
+*   Target server
+*   Account name
+*   Service/application
+
+***
+
+## 7. Processing NTLM Findings (What To Do With Them)
+
+### 7.1 If It’s a Server Application
+
+✅ Fix SPNs  
+✅ Enforce Kerberos  
+✅ Use gMSA instead of normal service accounts
+
+***
+
+### 7.2 If It’s a Printer
+
+Options:
+
+*   Change scan destination to modern methods
+*   Use dedicated low‑privileged account
+*   Place printer in isolated network
+*   (Worst case) temporary NTLM exception
+
+***
+
+### 7.3 If It’s Linux / NAS
+
+*   Upgrade Samba
+*   Enforce Kerberos (`sec=krb5`)
+*   Rejoin AD properly
+
+***
+
+### 7.4 If It’s an Unknown NTLM Attempt
+
+Treat it as:
+
+*   Misconfiguration **or**
+*   Potential attacker activity
+
+SOC should investigate.
+
+***
+
+## 8. How to Implement NTLM Disablement (Safe Phased Approach)
+
+### Phase 1 – Audit Only
+
+*   Enable NTLM auditing
+*   Collect data for weeks
+
+***
+
+### Phase 2 – Block NTLM on Workstations
+
+*   Minimal business impact
+*   Huge security win
+
+***
+
+### Phase 3 – Block NTLM on Member Servers
+
+*   After fixing app dependencies
+
+***
+
+### Phase 4 – Restrict NTLM on Domain Controllers
+
+*   Only after environment is clean
+*   This is the final state
+
+***
+
+## 9. Monitoring After Enforcement
+
+Once NTLM is restricted:
+
+*   Any NTLM attempt becomes:
+    *   Misconfiguration
+    *   Legacy device
+    *   Attack attempt
+
+✅ High‑signal detection for SOC
+
+***
+
+## 10. How This Fits Microsoft Security Strategy
+
+This recommendation directly supports:
+
+*   Zero Trust
+*   Credential theft prevention
+*   Defender for Identity detections
+*   Secure Score improvement
+
+***
+
+
+## ✅ Summary (One‑liner)
+
+> **Disabling NTLM removes a reused‑credential authentication protocol that enables lateral movement, pass‑the‑hash, and relay attacks, and replaces it with secure, ticket‑based authentication using Kerberos.**
+
+***
+
